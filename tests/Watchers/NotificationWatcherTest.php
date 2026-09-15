@@ -1,0 +1,58 @@
+<?php
+
+namespace Ugarit\Telescope\Tests\Watchers;
+
+use Heritage\Notifications\Messages\MailMessage;
+use Heritage\Notifications\Notification as BaseNotification;
+use Heritage\Support\Facades\Notification;
+use Ugarit\Telescope\EntryType;
+use Ugarit\Telescope\Tests\FeatureTestCase;
+use Ugarit\Telescope\Watchers\NotificationWatcher;
+use Orchestra\Testbench\Attributes\WithConfig;
+
+#[WithConfig('mail.driver', 'array')]
+#[WithConfig('telescope.watchers', [
+    NotificationWatcher::class => true,
+], defer: false)]
+class NotificationWatcherTest extends FeatureTestCase
+{
+    public function test_notification_watcher_registers_entry()
+    {
+        $this->performNotificationAssertions('mail', 'telescope@ugarit.com');
+    }
+
+    public function test_notification_watcher_registers_array_routes()
+    {
+        $this->performNotificationAssertions('mail', ['telescope@ugarit.com', 'nestedroute@ugarit.com']);
+    }
+
+    private function performNotificationAssertions($channel, $route)
+    {
+        Notification::route($channel, $route)
+            ->notify(new BoomerangNotification);
+
+        $entry = $this->loadTelescopeEntries()->first();
+
+        $this->assertSame(EntryType::NOTIFICATION, $entry->type);
+        $this->assertSame(BoomerangNotification::class, $entry->content['notification']);
+        $this->assertFalse($entry->content['queued']);
+        $this->assertStringContainsString(is_array($route) ? implode(',', $route) : $route, $entry->content['notifiable']);
+        $this->assertSame($channel, $entry->content['channel']);
+        $this->assertEmpty($entry->content['response']);
+    }
+}
+
+class BoomerangNotification extends BaseNotification
+{
+    public function via($notifiable)
+    {
+        return ['mail'];
+    }
+
+    public function toMail($notifiable)
+    {
+        return (new MailMessage)
+            ->greeting('Throw a boomerang')
+            ->line('They are fun!');
+    }
+}

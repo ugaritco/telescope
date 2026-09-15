@@ -1,0 +1,135 @@
+<?php
+
+namespace Ugarit\Telescope\Tests\Telescope;
+
+use Heritage\Contracts\Bus\Dispatcher;
+use Heritage\Contracts\Queue\ShouldQueue;
+use Ugarit\Telescope\Contracts\EntriesRepository;
+use Ugarit\Telescope\IncomingEntry;
+use Ugarit\Telescope\Telescope;
+use Ugarit\Telescope\Tests\FeatureTestCase;
+use Ugarit\Telescope\Watchers\QueryWatcher;
+use Orchestra\Testbench\Attributes\WithConfig;
+
+#[WithConfig('telescope.watchers', [
+    QueryWatcher::class => [
+        'enabled' => true,
+        'slow' => 0.9,
+    ],
+])]
+class TelescopeTest extends FeatureTestCase
+{
+    private $count = 0;
+
+    /** {@inheritdoc} */
+    #[\Override]
+    protected function tearDown(): void
+    {
+        Telescope::$afterRecordingHook = null;
+
+        parent::tearDown();
+    }
+
+    public function test_run_after_recording_callback()
+    {
+        Telescope::afterRecording(function (Telescope $telescope, IncomingEntry $entry) {
+            $this->count++;
+        });
+
+        $this->app->get('db')->table('telescope_entries')->count();
+
+        $this->app->get('db')->table('telescope_entries')->count();
+
+        $this->assertSame(2, $this->count);
+    }
+
+    public function test_after_recording_callback_can_store_and_flush()
+    {
+        Telescope::afterRecording(function (Telescope $telescope, IncomingEntry $entry) {
+            if (count($telescope::$entriesQueue) > 1) {
+                $repository = $this->app->make(EntriesRepository::class);
+                $telescope->store($repository);
+            }
+        });
+
+        $this->app->get('db')->table('telescope_entries')->count();
+
+        $this->assertCount(1, Telescope::$entriesQueue);
+
+        $this->app->get('db')->table('telescope_entries')->count();
+
+        $this->assertCount(0, Telescope::$entriesQueue);
+
+        $this->app->get('db')->table('telescope_entries')->count();
+
+        $this->assertCount(1, Telescope::$entriesQueue);
+    }
+
+    public function test_run_after_store_callback()
+    {
+        $storedEntries = null;
+        $storedBatchId = null;
+        Telescope::afterStoring(function (array $entries, $batchId) use (&$storedEntries, &$storedBatchId) {
+            $storedEntries = $entries;
+            $storedBatchId = $batchId;
+
+            $this->count += count($entries);
+        });
+
+        $this->app->get('db')->table('telescope_entries')->count();
+
+        $this->app->get('db')->table('telescope_entries')->count();
+
+        $this->assertSame(0, $this->count);
+
+        $repository = $this->app->make(EntriesRepository::class);
+        Telescope::store($repository);
+
+        $this->assertSame(2, $this->count);
+        $this->assertCount(2, $storedEntries);
+        $this->assertSame(36, strlen($storedBatchId));
+        $this->assertInstanceOf(IncomingEntry::class, $storedEntries[0]);
+    }
+
+    /**
+     * @test
+     */
+    public function dont_start_recording_when_dispatching_job_synchronously()
+    {
+        Telescope::stopRecording();
+
+        $this->assertFalse(Telescope::isRecording());
+
+        $this->app->get(Dispatcher::class)->dispatch(
+            new MySyncJob('Awesome Ugarit')
+        );
+
+        $this->assertFalse(Telescope::isRecording());
+    }
+
+    public function test_dashboard_javascript_line_endings_are_normalized()
+    {
+        $javascript = Telescope::js()->toHtml();
+
+        $this->assertStringContainsString('<script type="module">', $javascript);
+        $this->assertStringContainsString('window.Telescope =', $javascript);
+        $this->assertStringNotContainsString("\r", $javascript);
+    }
+}
+
+class MySyncJob implements ShouldQueue
+{
+    public $connection = 'sync';
+
+    private $payload;
+
+    public function __construct($payload)
+    {
+        $this->payload = $payload;
+    }
+
+    public function handle()
+    {
+        //
+    }
+}
